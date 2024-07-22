@@ -1,0 +1,58 @@
+version: 0.2
+env:
+  variables:
+    AWS_DEFAULT_REGION: "us-east-1"
+    IMAGE_REPO_NAME: "crypteye-web"
+    AWS_ACCOUNT_ID: "211125556960"
+phases:
+  install:
+    commands:
+      - echo "in the install phase"
+      - yum -y update
+      - curl -s -qL -o /usr/bin/jq https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64
+      - chmod +x /usr/bin/jq
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/$IMAGE_REPO_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=$COMMIT_HASH
+  build:
+    commands:
+      - echo "inside build stage"
+      - cd $CODEBUILD_SRC_DIR
+      - echo "ECR scan started"
+      - aws ecr start-image-scan --repository-name $IMAGE_REPO_NAME --image-id imageTag=$IMAGE_TAG > ecr_scan_result.json
+      - |
+        stat=$(aws ecr describe-image-scan-findings --repository-name $IMAGE_REPO_NAME --image-id imageTag=$IMAGE_TAG | jq -r ".imageScanStatus.status");
+        echo $stat;
+        while [ $stat != "COMPLETE" ]; do
+          if [ $stat = "FAILED" ] || [ $stat = "CANCELLED" ]; then
+            echo "ECR scan failed";
+            exit 1;
+          fi
+          if [ $stat = "IN_PROGRESS" ]; then
+            echo "ECR scan in progress";
+          fi
+          if [ $stat = "COMPLETE" ]; then
+            echo "ECR scan completed";
+            exit 0;
+          fi
+          sleep 5;
+          stat=$(aws ecr describe-image-scan-findings --repository-name $IMAGE_REPO_NAME --image-id imageTag=$IMAGE_TAG | jq -r ".imageScanStatus.status");
+        done
+      - aws ecr describe-image-scan-findings --repository-name $IMAGE_REPO_NAME --image-id imageTag=$IMAGE_TAG > ecr_scan_result.json
+  post_build:
+    commands:
+      - |
+        jq "{ \"messageType\": \"CodeScanReport\", \"reportType\": \"ECR\", \"createdAt\": $(date +\"%Y-%m-%dT%H:%M:%S.%3NZ\"), \"source_repository\": env.CODEBUILD_SOURCE_REPO_URL, \"source_branch\": env.CODEBUILD_SOURCE_VERSION, \"build_id\": env.CODEBUILD_BUILD_ID, \"source_commitid\": env.CODEBUILD_RESOLVED_SOURCE_VERSION, \"report\": . }" ecr_scan_result.json > payload.json
+      - cat payload.json
+      - |
+        if (grep -E 'HIGH|CRITICAL' ecr_scan_result.json); then 
+          aws lambda invoke --cli-binary-format raw-in-base64-out --function-name ImpToSecurityHubEKS --payload file://payload.json ecr_scan_result.json && echo "LAMBDA_SUCCEDED" || echo "LAMBDA_FAILED";
+          echo "There are critical or high vulnerabilities.. failing the build"
+          exit 1;
+        else
+          aws lambda invoke --cli-binary-format raw-in-base64-out --function-name ImpToSecurityHubEKS --payload file://payload.json ecr_scan_result.json && echo "LAMBDA_SUCCEDED" || echo "LAMBDA_FAILED";
+          exit 0;
+        fi

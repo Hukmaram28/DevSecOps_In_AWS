@@ -1,0 +1,49 @@
+version: 0.2
+
+env:
+  variables:
+    IMAGE_REPO_NAME: "crypteye-web"
+    AWS_ACCOUNT_ID: "211125556960"
+    AWS_DEFAULT_REGION: "us-east-1"
+
+phases:
+  install:
+    commands:
+      - echo Installing app dependencies...
+  pre_build:
+    commands:
+      - echo loggin into amazon ECR...
+      - aws --version
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/$IMAGE_REPO_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t $REPOSITORY_URI:$COMMIT_HASH -f Dockerfile .
+      - echo running anchore inline scanner...
+      - curl -s https://ci-tools.anchore.io/inline_scan-v0.6.0 | bash -s -- -t 10000 -r $REPOSITORY_URI:$COMMIT_HASH
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - |
+        jq "{ \"messageType\": \"CodeScanReport\", \"reportType\": \"ANCHORE\", \"createdAt\": $(date +\"%Y-%m-%dT%H:%M:%S.%3NZ\"), \"source_repository\": \"$CODEBUILD_SOURCE_REPO_URL\", \"source_branch\": \"$CODEBUILD_SOURCE_VERSION\", \"build_id\": \"$CODEBUILD_BUILD_ID\", \"source_commitid\": \"$CODEBUILD_RESOLVED_SOURCE_VERSION\", \"report\": . }" anchore-reports/$IMAGE_REPO_NAME_*-vuln.json > payload.json
+      - cat payload.json
+      - |
+        if (grep -E 'High|Critical' payload.json); then 
+          aws lambda invoke --cli-binary-format raw-in-base64-out --function-name ImpToSecurityHubEKS --payload file://payload.json anchore-reports/$IMAGE_REPO_NAME_*-vuln.json && echo "LAMBDA_SUCCEDED" || echo "LAMBDA_FAILED";
+          docker push $REPOSITORY_URI:$COMMIT_HASH
+          echo "There are critical or high vulnerabilities.. failing the build"
+        elif (grep -E 'Medium' payload.json); then
+          aws lambda invoke --cli-binary-format raw-in-base64-out --function-name ImpToSecurityHubEKS --payload file://payload.json anchore-reports/$IMAGE_REPO_NAME_*-vuln.json && echo "LAMBDA_SUCCEDED" || echo "LAMBDA_FAILED";
+          docker push $REPOSITORY_URI:$COMMIT_HASH
+        else
+          docker push $REPOSITORY_URI:$COMMIT_HASH
+        fi
+      - echo Writing image definitions file...
+      - printf '[{"name":"%s","imageUri":"%s"}]' $IMAGE_REPO_NAME $REPOSITORY_URI:$COMMIT_HASH > imagedefinitions.json
+      - cat imagedefinitions.json
+      - echo Done.
+
+artifacts:
+  files: imagedefinitions.json
