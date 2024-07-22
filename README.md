@@ -48,7 +48,7 @@ Some examples of secrets scanning tools are:
 - Trufflehog
 - detect-secrets
 
-## SCA/SAST (Static Application Security Testing)
+## SCA/SAST (Static Analysis and Security Testing)
 
 Static code analysis, also known as static code review, is the process of finding bad coding practices, potential vulnerabilities, and security flaws in software source code without running it. This method helps teams catch code bugs or vulnerabilities that manual code reviews and compilers often miss.
 
@@ -58,7 +58,7 @@ Besides checking code styles, static code analysis is also used for static appli
 
 Some examples of SCA/SAST tools are CAST highligh, Trivy, Synk, Anchore, and CoreOS Clair.
 
-## DAST (Dynamic Application Security Testing)
+## DAST (Dynamic Analysis and Security Testing)
 
 While SAST tools scan the code for vulnerabilities, DAST tools scan the application once it’s running. DAST tools simulate attacks on the application to find security issues, much like a hacker would. This approach provides more relevant findings with substantial evidence of the vulnerabilities.
 
